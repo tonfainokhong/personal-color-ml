@@ -1,0 +1,34 @@
+data:
+  root: "data/deeparmocromia"
+  image_size: 224          # ConvNeXt native size, also faster
+  num_workers: 0
+
+labels:
+  seasons: ["autumn", "spring", "summer", "winter"]
+  sub_classes:
+    autumn: ["deep", "soft", "warm"]
+    spring: ["bright", "light", "warm"]
+    summer: ["cool", "light", "soft"]
+    winter: ["bright", "cool", "deep"]
+
+model:
+  backbone: "convnext_tiny"  # stronger than efficientnet_b3 for fine-grained tasks
+  pretrained: true
+  dropout: 0.4
+
+training:
+  epochs: 60
+  batch_size: 16
+  learning_rate: 0.0001
+  weight_decay: 0.0002
+  lambda_sub: 0.3
+  freeze_epochs: 8
+  early_stopping_patience: 10   # stop if val acc doesn't improve for 10 epochs
+  scheduler: "cosine"
+  scheduler_step_size: 10
+  scheduler_gamma: 0.5
+
+output:
+  checkpoint_dir: "outputs/checkpoints_deep"
+  log_dir: "outputs/logs_deep"
+  best_model_name: "best_model_deep.pth"
