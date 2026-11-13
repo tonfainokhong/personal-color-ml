@@ -14,6 +14,8 @@ A computer-vision project for **personal color analysis** (Armocromia). It predi
 | Four-class chance-level reference | 25% (55.3% is ~2.2× this reference) |
 | Test-time augmentation | Reported **2–3% accuracy improvement** |
 
+See [the evaluation summary](EVALUATION.md) for metric provenance and reproduction instructions.
+
 These are the project's reported final evaluation figures. The dataset, trained weights, and complete experiment logs are not included in this public repository, so these numbers cannot be independently reproduced from the repository alone. The code below documents the training, evaluation, and inference pipelines; it should not be taken as a published benchmark on a downloadable dataset.
 
 ## Architecture and approach
