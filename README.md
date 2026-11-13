@@ -1,129 +1,116 @@
-# Personal Color ML
+# Chromia — Personal Color ML
 
-Hierarchical EfficientNet-B3 fine-tuned for personal color (Armocromia) season classification.
+A computer-vision project for **personal color analysis** (Armocromia). It predicts one of four color seasons—Spring, Summer, Autumn, or Winter—and a compatible subtype within a 12-subtype taxonomy.
 
-Outputs both a **season** prediction (Spring / Summer / Autumn / Winter) and a **sub-class** prediction (e.g. Deep Autumn, Soft Summer).
+**Model:** ImageNet-pretrained **ConvNeXt-Tiny** (~28M parameters) with separate season and subtype classification heads. The configured training dataset is Deep Armocromia, not the original small Roboflow dataset described in an earlier version of this README.
 
----
+## Project results
 
-## File Structure
+| Measure | Result |
+| --- | --- |
+| Labeled image dataset | **4,920 images** |
+| Classification taxonomy | **4 seasons / 12 subtypes** |
+| Four-season held-out test accuracy | **55.3%** |
+| Four-class chance-level reference | 25% (55.3% is ~2.2× this reference) |
+| Test-time augmentation | Reported **2–3% accuracy improvement** |
 
-```
+These are the project's reported final evaluation figures. The dataset, trained weights, and complete experiment logs are not included in this public repository, so these numbers cannot be independently reproduced from the repository alone. The code below documents the training, evaluation, and inference pipelines; it should not be taken as a published benchmark on a downloadable dataset.
+
+## Architecture and approach
+
+1. **Data preparation:** Load images and season/subtype labels using either a directory structure or a Roboflow-style one-hot CSV. Augment training images through crops, flips, mild color jitter, and rotation.
+2. **Hierarchical model:** Fine-tune ConvNeXt-Tiny with a shared feature extractor and two supervised classification heads (four seasons and 12 subtypes). The training loss combines season and subtype cross-entropy with a configurable weight.
+3. **Training:** Freeze the pretrained backbone for the initial epochs, then unfreeze it for fine-tuning. Use AdamW, learning-rate scheduling, validation-based early stopping, and checkpointing.
+4. **Evaluation:** Produce per-class precision, recall, F1, and confusion matrices for season and subtype predictions on an available test split.
+5. **Inference:** The FastAPI service retrieves the published checkpoint from Hugging Face, applies five input transformations for test-time augmentation, averages predictions, and constrains subtype selection to the predicted season.
+
+## Repository structure
+
+```text
 personal-color-ml/
-├── data/
-│   └── roboflow/
-│       ├── train/
-│       │   ├── autumn/        ← one folder per season
-│       │   │   ├── deep/      ← one folder per sub-class (optional)
-│       │   │   └── soft/
-│       │   ├── spring/
-│       │   ├── summer/
-│       │   └── winter/
-│       ├── valid/
-│       └── test/
-├── src/
-│   ├── dataset.py
-│   ├── model.py
-│   ├── train.py
-│   ├── evaluate.py
-│   └── utils.py
+├── backend/
+│   └── main.py            # FastAPI /predict and /health
 ├── configs/
-│   └── config.yaml
-├── outputs/               ← created automatically (git-ignored)
-│   ├── checkpoints/
-│   └── logs/
+│   └── config.yaml        # Dataset, labels, model and training settings
+├── src/
+│   ├── dataset.py         # Dataset loading and transforms
+│   ├── model.py           # Hierarchical ConvNeXt-Tiny
+│   ├── train.py           # Training, validation and checkpointing
+│   ├── evaluate.py        # Per-class metrics and confusion matrices
+│   └── utils.py
 ├── requirements.txt
 └── README.md
 ```
 
----
+The source dataset and training outputs are intentionally Git-ignored; this repository contains code, not the 4,920 training images or the checkpoint files.
 
 ## Setup
+
+Use Python 3.11+ and install the project dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
+### Dataset
 
-## Data
+The current configuration in `configs/config.yaml` uses `data/deeparmocromia` and 224 × 224 image inputs.
 
-Place your Roboflow export under `data/roboflow/` so that the structure matches above.
-Folder names must match the season names in `configs/config.yaml` (case-insensitive).
+Example hierarchical directory structure:
 
-If your Roboflow export uses flat season folders (no sub-class subdirectories), that's fine —
-sub-class labels will be skipped automatically and only the season head will be trained.
+```text
+data/deeparmocromia/
+├── train/
+│   ├── autumn/deep/...
+│   ├── autumn/soft/...
+│   ├── spring/bright/...
+│   ├── summer/cool/...
+│   └── winter/deep/...
+└── test/
+    ├── autumn/deep/...
+    ├── spring/bright/...
+    ├── summer/cool/...
+    └── winter/deep/...
+```
 
----
+The loader also supports a season-only folder layout and Roboflow-style CSV labels. Directory names must match the season and subtype names in `configs/config.yaml`. If a `train/` directory is supplied, `src/dataset.py` creates a seeded 10% internal validation split. A separate `test/` directory is used for held-out evaluation.
 
-## Training
+### Training
 
 ```bash
-# From the project root
-python src/train.py
-
-# Custom config
 python src/train.py --config configs/config.yaml
-
-# Resume from checkpoint
-python src/train.py --resume outputs/checkpoints/best_model.pth
 ```
 
-Key settings in `configs/config.yaml`:
-- `training.freeze_epochs` — number of epochs to keep the backbone frozen (gradual fine-tuning)
-- `training.lambda_sub` — weight of sub-class loss relative to season loss
-- `training.learning_rate` — initial LR (backbone gets 10× lower LR after unfreeze)
-
----
-
-## Evaluation
+With the current configuration, the best checkpoint is written to `outputs/checkpoints_deep/best_model_deep.pth`. To resume from an existing checkpoint:
 
 ```bash
-python src/evaluate.py --checkpoint outputs/checkpoints/best_model.pth --split test
+python src/train.py --config configs/config.yaml --resume outputs/checkpoints_deep/best_model_deep.pth
 ```
 
-Outputs:
-- Per-class precision / recall / F1 printed to console
-- Confusion matrix PNGs saved to `outputs/plots/`
+### Evaluation
 
----
-
-## Inference (single image)
-
-```python
-import torch
-from torchvision import transforms
-from PIL import Image
-from src.model import build_model
-from src.utils import build_label_maps, load_checkpoint
-import yaml
-
-with open("configs/config.yaml") as f:
-    cfg = yaml.safe_load(f)
-
-season2idx, idx2season, sub2idx, idx2sub, season_sub_indices = build_label_maps(cfg["labels"])
-
-model = build_model(cfg, num_sub_classes=len(sub2idx))
-load_checkpoint("outputs/checkpoints/best_model.pth", model)
-
-img = Image.open("path/to/face.jpg").convert("RGB")
-transform = transforms.Compose([
-    transforms.Resize((300, 300)),
-    transforms.ToTensor(),
-    transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225]),
-])
-x = transform(img).unsqueeze(0)
-
-results = model.predict(x, season_sub_indices, idx2season)
-r = results[0]
-print(f"Season   : {r['season']}  ({r['season_conf']*100:.1f}%)")
-print(f"Sub-class: {idx2sub[r['sub_idx']]}  ({r['sub_conf']*100:.1f}%)")
+```bash
+python src/evaluate.py --config configs/config.yaml --checkpoint outputs/checkpoints_deep/best_model_deep.pth --split test
 ```
 
----
+Run this only after providing the dataset and a matching checkpoint. The evaluator prints class-level precision/recall/F1 and writes confusion-matrix plots under `outputs/plots/`.
 
-## Notes
+### Local inference API
 
-- **531 images is small** — the freeze-then-unfreeze strategy and ColorJitter augmentation help a lot here.
-- Once you have the Deep Armocromia dataset, add it under `data/deeparmocromia/` with the same folder structure and update `data.root` in the config (or create a second config file).
-- Sub-class folder names in your Roboflow export must match the keys in `configs/config.yaml → labels.sub_classes`. Update them if needed.
+The FastAPI backend downloads the model checkpoint and label mapping from the Hugging Face repository specified by `HF_REPO_ID` (default: `tonfai-n/chromia-model`). If needed, set `HF_TOKEN` for access.
+
+```bash
+uvicorn backend.main:app --reload --port 8000
+```
+
+- `GET /health` — API health check
+- `POST /predict` — multipart image upload returning season, compatible subtype, confidence scores, and the four-season distribution
+
+The deployment frontend is maintained separately from this model repository.
+
+## Notes and limitations
+
+- The model is a **probabilistic classification system**, not a scientifically validated determination of someone's personal color season.
+- Lighting, color balance, camera processing, makeup, and differences in label definitions can affect predictions.
+- Reported performance should be interpreted in the context of the project's held-out test set, not as a claim of performance across all users or lighting conditions.
+- The five-pass test-time augmentation path used by the inference service is in `backend/main.py`. The standalone `predict_tta` helper in `src/model.py` is not the inference-service implementation.
