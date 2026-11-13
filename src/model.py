@@ -71,9 +71,8 @@ class HierarchicalConvNeXt(nn.Module):
         n_aug: int = 5,
     ):
         """
-        Test-Time Augmentation — runs n_aug augmented versions of each image
-        and averages the softmax probabilities before making the final prediction.
-        Free accuracy boost with no retraining.
+        Test-time augmentation for a batch of ImageNet-normalized tensors.
+        Unnormalizes before augmentation, then averages softmax probabilities.
         """
         from torchvision import transforms
 
@@ -113,6 +112,14 @@ class HierarchicalConvNeXt(nn.Module):
             ]),
         ]
 
+        if not 1 <= n_aug <= len(tta_transforms):
+            raise ValueError(f"n_aug must be between 1 and {len(tta_transforms)}")
+
+        # Dataloader tensors are normalized; torchvision TTA operates on image-range values.
+        mean_tensor = x.new_tensor(mean).view(1, 3, 1, 1)
+        std_tensor = x.new_tensor(std).view(1, 3, 1, 1)
+        x_rgb = (x * std_tensor + mean_tensor).clamp(0.0, 1.0)
+
         self.eval()
         with torch.no_grad():
             # Accumulate softmax probabilities across augmentations
@@ -120,9 +127,7 @@ class HierarchicalConvNeXt(nn.Module):
             sub_probs_sum    = torch.zeros(x.size(0), len(idx2sub), device=x.device)
 
             for t in tta_transforms[:n_aug]:
-                # Note: x is already a tensor; TTA transforms expect PIL
-                # so we apply transforms that work on tensors
-                x_aug = x.clone()
+                x_aug = t(x_rgb)
                 season_logits, sub_logits = self(x_aug)
                 season_probs_sum += torch.softmax(season_logits, dim=-1)
                 sub_probs_sum    += torch.softmax(sub_logits,    dim=-1)
@@ -141,7 +146,7 @@ class HierarchicalConvNeXt(nn.Module):
                 masked = torch.full_like(sub_probs[i], float("-inf"))
                 masked[valid_indices] = sub_probs[i, valid_indices]
                 sub_pred = masked.argmax().item()
-                sub_conf = torch.softmax(masked, dim=-1)[sub_pred].item()
+                sub_conf = (sub_probs[i, sub_pred] / sub_probs[i, valid_indices].sum()).item()
 
                 results.append({
                     "season":      season_name,
